@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>指纹验证 · 本地 Demo</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0d1117;
+    color: #e6edf3;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+  }
+  .card {
+    width: 100%;
+    max-width: 380px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 20px;
+    padding: 26px 22px;
+    text-align: center;
+  }
+  .icon {
+    width: 76px; height: 76px;
+    margin: 0 auto 18px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #1f6feb, #388bfd);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 38px;
+    box-shadow: 0 8px 24px rgba(31,111,235,0.4);
+  }
+  h1 { font-size: 17px; font-weight: 800; margin-bottom: 8px; }
+  .sub { font-size: 12px; color: #8b949e; margin-bottom: 20px; line-height: 1.5; }
+  .status {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 12px;
+    font-size: 13px;
+    margin-bottom: 18px;
+    min-height: 20px;
+    word-break: break-word;
+  }
+  .status.ok { color: #3fb950; border-color: #238636; }
+  .status.err { color: #f85149; border-color: #da3633; }
+  .status.info { color: #58a6ff; border-color: #1f6feb; }
+  .support { font-size: 11px; color: #8b949e; margin-bottom: 16px; }
+  .support b { color: #3fb950; }
+  .support.no b { color: #f85149; }
+  button {
+    width: 100%;
+    background: linear-gradient(135deg, #1f6feb, #388bfd);
+    border: none;
+    border-radius: 12px;
+    padding: 13px;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    margin-bottom: 10px;
+    transition: transform .15s, opacity .15s;
+  }
+  button:active { transform: scale(.97); }
+  button:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+  button.gray { background: #21262d; color: #e6edf3; }
+  .hint { font-size: 11px; color: #8b949e; margin-top: 12px; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🔐</div>
+    <h1>指纹 / 面容验证</h1>
+    <div class="sub">本地 Demo · 不传输任何生物特征数据</div>
+
+    <div class="support" id="support">检查设备支持中...</div>
+    <div class="status" id="status">就绪</div>
+
+    <button id="enrollBtn" onclick="enroll()">📝 注册指纹</button>
+    <button id="verifyBtn" onclick="verify()" disabled>🔓 验证指纹</button>
+    <button class="gray" onclick="clearAll()">🗑 清除已注册</button>
+
+    <div class="hint">
+      原理：指纹只在你设备本地验证，网页只拿到“通过/不通过”结果。<br>
+      注册后，下次打开页面可以直接用指纹验证。
+    </div>
+  </div>
+
+<script>
+const supportEl = document.getElementById('support');
+const statusEl = document.getElementById('status');
+const enrollBtn = document.getElementById('enrollBtn');
+const verifyBtn = document.getElementById('verifyBtn');
+
+const STORAGE_KEY = 'fingerprint_demo_cred';
+let savedCredId = localStorage.getItem(STORAGE_KEY);
+
+function setStatus(text, type) {
+  statusEl.textContent = text;
+  statusEl.className = 'status' + (type ? ' ' + type : '');
+}
+
+async function checkSupport() {
+  if (!window.PublicKeyCredential) {
+    supportEl.innerHTML = '❌ <b>不支持</b> WebAuthn';
+    supportEl.className = 'support no';
+    enrollBtn.disabled = true;
+    return;
+  }
+  try {
+    const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    if (available) {
+      supportEl.innerHTML = '✅ 设备支持 <b>指纹 / 面容验证</b>';
+      supportEl.className = 'support';
+    } else {
+      supportEl.innerHTML = '❌ 设备没有可用的指纹/面容验证器';
+      supportEl.className = 'support no';
+      enrollBtn.disabled = true;
+    }
+  } catch (e) {
+    supportEl.innerHTML = '⚠️ 检查失败：' + e.message;
+    supportEl.className = 'support no';
+  }
+  if (savedCredId) {
+    verifyBtn.disabled = false;
+    setStatus('已检测到本机注册的指纹凭证，可直接验证', 'info');
+  }
+}
+
+function buf2base64(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function base642buf(str) {
+  str = str.replace(/-/g, '+').replace(/_/g, '/');
+  const bin = atob(str);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+
+async function enroll() {
+  if (!window.PublicKeyCredential) return;
+  enrollBtn.disabled = true;
+  setStatus('请按提示验证指纹 / 面容...', 'info');
+  try {
+    const challenge = new Uint8Array(32);
+    crypto.getRandomValues(challenge);
+    const userId = new Uint8Array(16);
+    crypto.getRandomValues(userId);
+
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        challenge: challenge,
+        rp: { name: '指纹Demo' },
+        user: { id: userId, name: 'local-user', displayName: '本地用户' },
+        pubKeyCredParams: [
+          { type: 'public-key', alg: -7 },
+          { type: 'public-key', alg: -257 }
+        ],
+        authenticatorSelection: {
+          authenticatorAttachment: 'platform',
+          userVerification: 'required',
+          residentKey: 'preferred'
+        },
+        timeout: 60000,
+        attestation: 'none'
+      }
+    });
+
+    if (!credential) {
+      setStatus('注册被取消', 'err');
+      enrollBtn.disabled = false;
+      return;
+    }
+    savedCredId = buf2base64(credential.rawId);
+    localStorage.setItem(STORAGE_KEY, savedCredId);
+    setStatus('✅ 注册成功！下次可用指纹验证', 'ok');
+    verifyBtn.disabled = false;
+  } catch (e) {
+    let msg = e.message || e.name || '未知错误';
+    if (e.name === 'NotAllowedError') msg = '用户取消或超时';
+    if (e.name === 'InvalidStateError') msg = '此设备已注册过，请先清除';
+    setStatus('❌ 注册失败：' + msg, 'err');
+  } finally {
+    enrollBtn.disabled = false;
+  }
+}
+
+async function verify() {
+  if (!savedCredId) {
+    setStatus('请先注册指纹', 'err');
+    return;
+  }
+  verifyBtn.disabled = true;
+  setStatus('请验证指纹 / 面容...', 'info');
+  try {
+    const challenge = new Uint8Array(32);
+    crypto.getRandomValues(challenge);
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: challenge,
+        allowCredentials: [{
+          id: base642buf(savedCredId),
+          type: 'public-key',
+          transports: ['internal']
+        }],
+        userVerification: 'required',
+        timeout: 60000
+      }
+    });
+    if (assertion) {
+      setStatus('✅ 验证通过！欢迎回来 🎉', 'ok');
+    } else {
+      setStatus('❌ 验证失败', 'err');
+    }
+  } catch (e) {
+    let msg = e.message || e.name || '未知错误';
+    if (e.name === 'NotAllowedError') msg = '用户取消或超时';
+    setStatus('❌ 验证失败：' + msg, 'err');
+  } finally {
+    verifyBtn.disabled = false;
+  }
+}
+
+function clearAll() {
+  localStorage.removeItem(STORAGE_KEY);
+  savedCredId = null;
+  verifyBtn.disabled = true;
+  setStatus('🗑 已清除本机指纹凭证', 'info');
+}
+
+checkSupport();
+</script>
+</body>
+</html>
